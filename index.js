@@ -13,9 +13,6 @@ const OLLAMA_TIMEOUT_MS = 60000;
 
 const MAX_HISTORY = 10;
 const conversationHistory = new Map();
-const pausedChats = new Map(); // Чаты на паузе из-за ручного вмешательства Мадияра
-const botSentMessages = new Set();
-const botSendingChats = new Set();
 
 // Файл для вечернего дайджеста
 const SUMMARY_FILE = path.join(__dirname, 'daily_summary.json');
@@ -288,55 +285,32 @@ client.on('disconnected', (reason) => {
   console.log('Клиент WhatsApp отключен:', reason);
 });
 
-// Слушатель всех сообщений (включая отправленные Мадияром вручную с телефона/ПК)
-client.on('message_create', (msg) => {
-  if (msg.fromMe) {
-    const chatId = msg.to || msg.from;
-    if (chatId && botSendingChats.has(chatId)) return;
-
-    const messageId = msg.id?._serialized || msg.id?.id;
-    if (messageId && botSentMessages.has(messageId)) {
-      botSentMessages.delete(messageId);
-      return;
-    }
-
-    if (chatId) {
-      pausedChats.set(chatId, Date.now() + 10 * 60 * 1000); // 10 минут паузы
-      console.log(`[ПАУЗА 10 МИН] Мадияр ответил с телефона в чат ${chatId}. Бот заблокирован в этом чате на 10 минут.`);
-    }
-  }
-});
-
 // Главный обработчик входящих сообщений
 client.on('message', async (msg) => {
   try {
+    console.log(`[ВХОДЯЩЕЕ СООБЩЕНИЕ ИВЕНТ]: fromMe=${msg.fromMe}, from=${msg.from}, body="${msg.body}"`);
+
     if (msg.fromMe) return;
 
     const chatId = msg.from;
-    if (!chatId || msg.broadcast || chatId.endsWith('@newsletter') ||
-      chatId.endsWith('@lid') || chatId.endsWith('@broadcast')) return;
-
-    // ПРОВЕРКА ПАУЗЫ (РУЧНОЙ РЕЖИМ)
-    if (pausedChats.has(chatId)) {
-      const pauseUntil = pausedChats.get(chatId);
-      if (Date.now() < pauseUntil) {
-        console.log(`[Игнор] Чат ${chatId} на паузе (ручной режим, осталось ${Math.round((pauseUntil - Date.now())/1000/60)} мин).`);
-        return; // Бот молчит
-      } else {
-        pausedChats.delete(chatId); // 10 минут прошло, бот снова работает
-      }
+    if (!chatId || msg.broadcast || chatId.endsWith('@newsletter')) {
+      console.log(`[Игнор спец-канала]: ${chatId}`);
+      return;
     }
 
     let isClassGroup = false;
 
     // Разрешаем обработку только сообщений из классной группы 10ә.
-    if (msg.from.endsWith('@g.us')) {
+    if (msg.from.endsWith('@g.us') || msg.isGroup) {
       try {
         const chat = await msg.getChat();
         const chatName = chat?.name || '';
         isClassGroup = ALLOWED_GROUPS.some(g => chatName.toLowerCase().includes(g.toLowerCase()));
 
-        if (!isClassGroup) return;
+        if (!isClassGroup) {
+          console.log(`[Игнор группы]: ${chatName}`);
+          return;
+        }
       } catch (e) {
         return;
       }
@@ -360,31 +334,33 @@ client.on('message', async (msg) => {
     console.log(`Текст: "${userText}"`);
 
     // Запрос к Ollama
+    console.log(`[Отправка запроса к Ollama (${OLLAMA_MODEL})]...`);
     const aiResponseText = await askOllama(msg.from, userText, systemPrompt);
-    console.log(`[Ответ Ollama]: "${aiResponseText}"`);
+    console.log(`[Ответ Ollama готов]: "${aiResponseText}"`);
 
-    botSendingChats.add(chatId);
-    let sentMessage;
-    try {
-      sentMessage = await msg.reply(aiResponseText);
-    } finally {
-      botSendingChats.delete(chatId);
-    }
-    const sentMessageId = sentMessage?.id?._serialized || sentMessage?.id?.id;
-    if (sentMessageId) botSentMessages.add(sentMessageId);
+    // Отправка ответа пользователю через client.sendMessage
+    await client.sendMessage(msg.from, aiResponseText);
+    console.log(`[ОТПРАВЛЕНО В WHATSAPP] -> ${contactDisplayName}`);
   } catch (err) {
-    console.error('[Ошибка при обработке сообщения]:', err);
+    console.error('[Ошибка при обработке сообщения]:', err?.message || err);
   }
 });
 
 // Глобальная обработка ошибок
+client.on('error', (err) => {
+  console.error('[CLIENT ERROR]:', err);
+});
+
 process.on('unhandledRejection', (reason) => {
-  console.error('[Unhandled Rejection]:', reason);
+  console.error('[UNCAUGHT REJECTION ERROR]:', reason);
 });
 
 process.on('uncaughtException', (err) => {
-  console.error('[Uncaught Exception]:', err);
+  console.error('[UNCAUGHT EXCEPTION ERROR]:', err);
 });
+
+// Гарантия работы Event Loop (чтобы процесс Node.js не завершался до полной загрузки Chromium/Puppeteer)
+setInterval(() => {}, 1000);
 
 function gracefulShutdown() {
   console.log('\nЗавершение работы бота...');
@@ -398,4 +374,11 @@ function gracefulShutdown() {
 process.on('SIGINT', gracefulShutdown);
 process.on('SIGTERM', gracefulShutdown);
 
-client.initialize();
+// Запуск инициализации в try-catch блоке
+try {
+  console.log('Запуск инициализации WhatsApp клиента...');
+  client.initialize();
+  console.log('Клиент инициализирован, ожидание событий...');
+} catch (err) {
+  console.error('[INITIALIZATION ERROR]: Ошибка запуска WhatsApp клиента:', err);
+}
