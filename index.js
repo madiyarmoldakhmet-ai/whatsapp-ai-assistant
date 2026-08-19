@@ -14,6 +14,8 @@ const OLLAMA_TIMEOUT_MS = 60000;
 const MAX_HISTORY = 10;
 const conversationHistory = new Map();
 const pausedChats = new Map(); // Чаты на паузе из-за ручного вмешательства Мадияра
+const botSentMessages = new Set();
+const botSendingChats = new Set();
 
 // Файл для вечернего дайджеста
 const SUMMARY_FILE = path.join(__dirname, 'daily_summary.json');
@@ -290,6 +292,14 @@ client.on('disconnected', (reason) => {
 client.on('message_create', (msg) => {
   if (msg.fromMe) {
     const chatId = msg.to || msg.from;
+    if (chatId && botSendingChats.has(chatId)) return;
+
+    const messageId = msg.id?._serialized || msg.id?.id;
+    if (messageId && botSentMessages.has(messageId)) {
+      botSentMessages.delete(messageId);
+      return;
+    }
+
     if (chatId) {
       pausedChats.set(chatId, Date.now() + 10 * 60 * 1000); // 10 минут паузы
       console.log(`[ПАУЗА 10 МИН] Мадияр ответил с телефона в чат ${chatId}. Бот заблокирован в этом чате на 10 минут.`);
@@ -303,6 +313,8 @@ client.on('message', async (msg) => {
     if (msg.fromMe) return;
 
     const chatId = msg.from;
+    if (!chatId || msg.broadcast || chatId.endsWith('@newsletter') ||
+      chatId.endsWith('@lid') || chatId.endsWith('@broadcast')) return;
 
     // ПРОВЕРКА ПАУЗЫ (РУЧНОЙ РЕЖИМ)
     if (pausedChats.has(chatId)) {
@@ -315,17 +327,17 @@ client.on('message', async (msg) => {
       }
     }
 
-    const isGroup = isGroupMessage(msg);
     let isClassGroup = false;
 
     // Разрешаем обработку только сообщений из классной группы 10ә.
-    if (isGroup) {
-      const chat = await msg.getChat();
-      const groupName = String(chat?.name || '').toLowerCase();
-      isClassGroup = ALLOWED_GROUPS.some((group) => groupName.includes(group.toLowerCase()));
+    if (msg.from.endsWith('@g.us')) {
+      try {
+        const chat = await msg.getChat();
+        const chatName = chat?.name || '';
+        isClassGroup = ALLOWED_GROUPS.some(g => chatName.toLowerCase().includes(g.toLowerCase()));
 
-      if (!isClassGroup) {
-        console.log(`[Игнор] Сообщение из группы ${chat?.name || msg.from}`);
+        if (!isClassGroup) return;
+      } catch (e) {
         return;
       }
     }
@@ -351,9 +363,17 @@ client.on('message', async (msg) => {
     const aiResponseText = await askOllama(msg.from, userText, systemPrompt);
     console.log(`[Ответ Ollama]: "${aiResponseText}"`);
 
-    await msg.reply(aiResponseText);
-  } catch (error) {
-    console.error('[Ошибка при обработке сообщения]:', error?.message || error);
+    botSendingChats.add(chatId);
+    let sentMessage;
+    try {
+      sentMessage = await msg.reply(aiResponseText);
+    } finally {
+      botSendingChats.delete(chatId);
+    }
+    const sentMessageId = sentMessage?.id?._serialized || sentMessage?.id?.id;
+    if (sentMessageId) botSentMessages.add(sentMessageId);
+  } catch (err) {
+    console.error('[Ошибка при обработке сообщения]:', err);
   }
 });
 
