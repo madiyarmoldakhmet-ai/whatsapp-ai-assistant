@@ -4,6 +4,8 @@ const qrcode = require('qrcode-terminal');
 const fs = require('fs');
 const path = require('path');
 
+const ALLOWED_GROUPS = ['10ә', '10 "ә"', '10a', '10-ә'];
+
 // 1. ПОДКЛЮЧЕНИЕ К OLLAMA
 const OLLAMA_CHAT_URL = 'http://localhost:11434/api/chat';
 const OLLAMA_MODEL = 'qwen2.5:14b';
@@ -60,6 +62,14 @@ const MAIN_PROMPT = `Ты — Мадияр, шарящий пацан, техн�
    - ЗАПРЕЩЕНО повторять фразы собеседника эхом.
    - ЗАПРЕЩЕНО писать фразы бота ('Чем помочь?', 'Я ИИ').
    - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО писать теги <think> и рассуждать вслух. Выдавай ТОЛЬКО финальный текст ответа.`;
+
+const CLASS_GROUP_PROMPT = `Ты — Мадияр, учишься в 10ә классе и отвечаешь одноклассникам в общей группе.
+
+ПРАВИЛА ДЛЯ ИИ:
+1. Если спрашивают домашку (үй жұмысы, ДЗ, дз), задачи или учебные вопросы — дай четкий и умный ответ на казахском или русском языке.
+2. Отвечай коротко и по-простому, как обычный одноклассник в общем чате. Не пиши длинных формальных текстов.
+3. Не обещай от своего имени личных встреч, созвонов, поездок или других дел. На такие предложения отвечай нейтрально: "понял, позже гляну и отпишусь".
+4. Не выдумывай личные факты и планы. Не пиши теги <think> и рассуждения вслух — выдавай только готовый ответ.`;
 
 // Хелпер истории
 function getHistory(chatId) {
@@ -305,10 +315,19 @@ client.on('message', async (msg) => {
       }
     }
 
-    // 1. ИГНОР ГРУПП
-    if (isGroupMessage(msg)) {
-      console.log(`[Игнор] Сообщение из группы ${msg.from}`);
-      return;
+    const isGroup = isGroupMessage(msg);
+    let isClassGroup = false;
+
+    // Разрешаем обработку только сообщений из классной группы 10ә.
+    if (isGroup) {
+      const chat = await msg.getChat();
+      const groupName = String(chat?.name || '').toLowerCase();
+      isClassGroup = ALLOWED_GROUPS.some((group) => groupName.includes(group.toLowerCase()));
+
+      if (!isClassGroup) {
+        console.log(`[Игнор] Сообщение из группы ${chat?.name || msg.from}`);
+        return;
+      }
     }
 
     const userText = getUserText(msg);
@@ -317,8 +336,8 @@ client.on('message', async (msg) => {
     const { name, pushname, number } = await getContactDetails(msg);
     const contactDisplayName = pushname || name || number || msg.from;
     const isSafe = isSafeContact([name, pushname, number]);
-    const systemPrompt = isSafe ? POLITE_PROMPT : MAIN_PROMPT;
-    const modeName = isSafe ? 'ВЕЖЛИВЫЙ (SAFE)' : 'УМНЫЙ ПАЦАНСКИЙ';
+    const systemPrompt = isClassGroup ? CLASS_GROUP_PROMPT : (isSafe ? POLITE_PROMPT : MAIN_PROMPT);
+    const modeName = isClassGroup ? 'КЛАССНАЯ ГРУППА 10ә' : (isSafe ? 'ВЕЖЛИВЫЙ (SAFE)' : 'УМНЫЙ ПАЦАНСКИЙ');
 
     const hasActionItem = checkForActionItem(userText);
 
