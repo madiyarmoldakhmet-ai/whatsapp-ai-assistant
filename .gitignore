@@ -1,0 +1,7 @@
+node_modules/
+.wwebjs_auth/
+.wwebjs_cache/
+daily_summary.json
+archive.json
+*.log
+.env
