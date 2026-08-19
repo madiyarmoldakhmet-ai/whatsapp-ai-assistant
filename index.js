@@ -11,6 +11,7 @@ const OLLAMA_TIMEOUT_MS = 60000;
 
 const MAX_HISTORY = 10;
 const conversationHistory = new Map();
+const pausedChats = new Map(); // Чаты на паузе из-за ручного вмешательства Мадияра
 
 // Файл для вечернего дайджеста
 const SUMMARY_FILE = path.join(__dirname, 'daily_summary.json');
@@ -275,10 +276,34 @@ client.on('disconnected', (reason) => {
   console.log('Клиент WhatsApp отключен:', reason);
 });
 
+// Слушатель всех сообщений (включая отправленные Мадияром вручную с телефона/ПК)
+client.on('message_create', (msg) => {
+  if (msg.fromMe) {
+    const chatId = msg.to || msg.from;
+    if (chatId) {
+      pausedChats.set(chatId, Date.now() + 10 * 60 * 1000); // 10 минут паузы
+      console.log(`[ПАУЗА 10 МИН] Мадияр ответил с телефона в чат ${chatId}. Бот заблокирован в этом чате на 10 минут.`);
+    }
+  }
+});
+
 // Главный обработчик входящих сообщений
 client.on('message', async (msg) => {
   try {
     if (msg.fromMe) return;
+
+    const chatId = msg.from;
+
+    // ПРОВЕРКА ПАУЗЫ (РУЧНОЙ РЕЖИМ)
+    if (pausedChats.has(chatId)) {
+      const pauseUntil = pausedChats.get(chatId);
+      if (Date.now() < pauseUntil) {
+        console.log(`[Игнор] Чат ${chatId} на паузе (ручной режим, осталось ${Math.round((pauseUntil - Date.now())/1000/60)} мин).`);
+        return; // Бот молчит
+      } else {
+        pausedChats.delete(chatId); // 10 минут прошло, бот снова работает
+      }
+    }
 
     // 1. ИГНОР ГРУПП
     if (isGroupMessage(msg)) {
