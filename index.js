@@ -4,7 +4,7 @@ const qrcode = require('qrcode-terminal');
 const fs = require('fs');
 const path = require('path');
 
-const ALLOWED_GROUPS = ['10ә', '10 "ә"', '10a', '10-ә'];
+const ALLOWED_GROUPS = ['10ә', '10 "ә"', '10a', '10-ә', 'tkrobotics', 'tk robotics', 'tk_robotics'];
 
 // 1. ПОДКЛЮЧЕНИЕ К OLLAMA
 const OLLAMA_CHAT_URL = 'http://localhost:11434/api/chat';
